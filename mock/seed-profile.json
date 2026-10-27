@@ -1,0 +1,139 @@
+{
+ "profile": {
+  "v": 1,
+  "name": "Invitado ECF5",
+  "created": 1793005109401,
+  "stardust": 0,
+  "totalStardust": 0,
+  "bonk": 0,
+  "totalBonk": 0,
+  "unlocked": [],
+  "league": [],
+  "starter": 0,
+  "forms": [],
+  "research": {},
+  "captured": {},
+  "seen": [],
+  "played": [],
+  "shinies": [],
+  "classics": [],
+  "skins": [],
+  "team": [],
+  "lab": {},
+  "biomes": {
+   "forest": 0
+  },
+  "quests": {},
+  "counters": {},
+  "runs": [],
+  "best": {},
+  "times": {},
+  "kills": {},
+  "medals": {},
+  "endless": {},
+  "settings": {
+   "master": 0.8,
+   "music": 0.5,
+   "sfx": 0.7,
+   "cries": 0.6,
+   "quality": "high",
+   "aimMode": "auto",
+   "sensitivity": 1,
+   "invertY": false,
+   "damageNumbers": true,
+   "floatText": true,
+   "shakeOn": true,
+   "screenShake": 1,
+   "fov": 70,
+   "showFps": false,
+   "reduceFlashes": false,
+   "pixel": 0,
+   "muteHidden": true,
+   "theme": "auto",
+   "hudScale": 1,
+   "hudOpacity": 1,
+   "bossBarOpacity": 1,
+   "showBanners": true,
+   "showMinimap": true,
+   "showLadder": true,
+   "showToasts": true,
+   "showStreak": true,
+   "showItems": true,
+   "mapScale": 1,
+   "mapIcons": 1,
+   "mapNorthUp": false,
+   "fxOpacity": 1,
+   "ownFxOpacity": 1,
+   "fxGlow": 1,
+   "touchScale": 1,
+   "camDist": 9,
+   "calmCandies": false,
+   "pickupFx": "full",
+   "mateFx": "full",
+   "skipEmptyLevelUp": false,
+   "hideOwnFx": false,
+   "fixedStick": false,
+   "padRumble": true,
+   "padDead": 0.15,
+   "autoUlt": false,
+   "ultPose": true,
+   "tours": "",
+   "hintsSeen": "",
+   "tips": true
+  },
+  "lastSpecies": 4,
+  "lastBiome": "forest",
+  "banished": [],
+  "itemsOwned": [],
+  "itemsOff": [],
+  "daily": {
+   "idx": 15,
+   "ids": [
+    "d-time",
+    "d-burn",
+    "d-bosses"
+   ],
+   "prog": [
+    0,
+    0,
+    0
+   ],
+   "claimed": [
+    0,
+    0,
+    0,
+    0
+   ],
+   "rerolls": 0
+  },
+  "weekly": {
+   "idx": 3,
+   "ids": [
+    "w-chests",
+    "w-allies",
+    "w-win"
+   ],
+   "prog": [
+    0,
+    0,
+    0
+   ],
+   "claimed": [
+    0,
+    0,
+    0,
+    0
+   ],
+   "rerolls": 0
+  },
+  "dailyStreak": {
+   "last": 0,
+   "n": 0
+  },
+  "bag": {},
+  "avatar": "",
+  "frame": "",
+  "title": "",
+  "cosmetics": []
+ }
+}
