@@ -131,7 +131,7 @@ function rewardsFor(result) {
 }
 
 /* ------------------------- 星尘商店 ------------------------- */
-/* 价格与客户端一致：当日第 n 次购买 = 基础价 × 1.5^n，名额按 UTC 日重置 */
+/* 价格与客户端一致：当日第 n 次购买 = 基础价 × (1 + 0.5n)，名额按 UTC 日重置 */
 const SHOP = {
   'rare-candy': { base: 150, daily: 4 },
   'lucky-egg': { base: 250, daily: 4 },
@@ -162,6 +162,276 @@ function buyShop(p, id, now) {
     n: Object.assign({}, sameDay ? p.shop.n : {}, { [id]: bought + 1 }),
   };
   return true;
+}
+
+/* ------------------------- 研究所（Lab） ------------------------- */
+/* 与客户端 news 分包里的实验室表完全一致：
+   cost 统一走 0.85 系数并取 5 的整数倍（原站就是这么写的）。 */
+const labRound = (v) => Math.round((v * 0.85) / 5) * 5;
+const labConst = (v) => () => labRound(v);
+const labGeo = (base, ratio) => (n) => labRound(base * Math.pow(ratio, n));
+const labSteps = (arr) => (n) => labRound(arr[Math.min(n, arr.length - 1)]);
+
+const LAB = {
+  'slot-move': { max: 1, cost: labConst(1500) },
+  'slot-vit': { max: 2, cost: labSteps([1200, 3000]) },
+  reroll: { max: 6, cost: labGeo(120, 1.4) },
+  skip: { max: 6, cost: labGeo(80, 1.4) },
+  banish: { max: 6, cost: labGeo(150, 1.4) },
+  choice4: { max: 1, cost: labConst(3000) },
+  dmg: { max: 8, cost: labGeo(100, 1.4) },
+  hp: { max: 8, cost: labGeo(100, 1.4) },
+  spd: { max: 6, cost: labGeo(120, 1.45) },
+  xp: { max: 6, cost: labGeo(120, 1.45) },
+  gold: { max: 6, cost: labGeo(100, 1.45) },
+  luck: { max: 6, cost: labGeo(140, 1.45) },
+  magnet: { max: 5, cost: labGeo(80, 1.45) },
+  regen: { max: 5, cost: labGeo(120, 1.45) },
+  armor: { max: 6, cost: labGeo(120, 1.45) },
+  revive: { max: 1, cost: labConst(5000) },
+  research: { max: 4, cost: labGeo(250, 1.6) },
+  party: { max: 1, cost: labConst(3500) },
+  archive: { max: 6, cost: labSteps([600, 1200, 2000, 3000, 4000, 5500]) },
+  crit: { max: 5, cost: labGeo(200, 1.5) },
+  atkspd: { max: 5, cost: labGeo(220, 1.5) },
+  area: { max: 5, cost: labGeo(200, 1.5) },
+  ult: { max: 5, cost: labGeo(250, 1.5) },
+  bag: { max: 1, cost: labConst(4000) },
+};
+
+function buyLab(p, id) {
+  const item = LAB[id];
+  if (!item) return false;
+  p.lab = p.lab || {};
+  const lv = p.lab[id] || 0;
+  if (lv >= item.max) return false;
+  const price = item.cost(lv);
+  if ((p.stardust || 0) < price) return false;
+  p.stardust -= price;
+  p.lab[id] = lv + 1;
+  return true;
+}
+
+/* 永久解锁道具：花星尘买断，价格取自客户端的道具价目表 */
+const ITEM_PRICE = {
+  'soda-pop': 150, repel: 150, 'white-flute': 150, 'binding-band': 200, metronome: 200,
+  'smooth-rock': 250, 'adrenaline-orb': 250, awakening: 250, 'old-rod': 300, 'burn-heal': 300,
+  'ice-heal': 300, 'metal-powder': 300, lemonade: 250, 'secret-key': 300, 'gold-teeth': 300,
+  'macho-brace': 350, 'focus-band': 350, 'kings-rock': 400, eviolite: 400, 'black-sludge': 400,
+  'lum-berry': 450, stick: 500, 'shed-shell': 500, 'razor-fang': 550, 'cell-battery': 600,
+  bicycle: 500, 'iron-ball': 500, 'fresh-water': 550, 'full-heal': 550, 'guard-spec': 600,
+  'coin-case': 600, 'poke-doll': 550, 'dowsing-machine': 600, 'focus-sash': 900, 'comet-shard': 900,
+  'fire-stone': 1000, 'thunder-stone': 1000, 'ice-stone': 1000, 'leaf-stone': 1000,
+  protector: 1100, electirizer: 1100, revive: 1200, 'griseous-orb': 1200, 'reaper-cloth': 1400,
+  'thick-club': 1100, 'rage-candy-bar': 1100, 'silph-scope': 1200, 'ss-ticket': 1200,
+  'max-ether': 1200, 'moon-stone': 2200, 'silver-wing': 2500, 'sun-stone': 2500,
+  'adamant-orb': 2800, 'lustrous-orb': 2800, 'soul-dew': 3000, 'dawn-stone': 3200,
+  'rainbow-wing': 3500, 'poke-flute': 3000, 'tm-case': 3200,
+};
+
+function buyItem(p, key) {
+  const price = ITEM_PRICE[key];
+  if (price == null) return false;
+  p.itemsOwned = p.itemsOwned || [];
+  if (p.itemsOwned.includes(key)) return false;
+  if ((p.stardust || 0) < price) return false;
+  p.stardust -= price;
+  p.itemsOwned.push(key);
+  return true;
+}
+
+/* 档案库栏位：每级 +5，另加「已解锁道具数 ÷ 2」（仅在档案库 ≥1 级时生效） */
+function archiveSlots(p) {
+  const arch = (p.lab && p.lab.archive) || 0;
+  const bonus = arch > 0 ? Math.floor((p.itemsOwned || []).filter((k) => k in ITEM_PRICE).length / 2) : 0;
+  return 5 * arch + bonus;
+}
+
+function archiveItem(p, key, off) {
+  p.itemsOff = p.itemsOff || [];
+  p.itemsOwned = p.itemsOwned || [];
+  const already = p.itemsOff.includes(key);
+  if (off) {
+    if (already) return false;
+    if (key in ITEM_PRICE && !p.itemsOwned.includes(key)) return false;
+    if (p.itemsOff.length >= archiveSlots(p)) return false;
+    p.itemsOff.push(key);
+    return true;
+  }
+  if (!already) return false;
+  p.itemsOff = p.itemsOff.filter((k) => k !== key);
+  return true;
+}
+
+/* ------------------------- 委托 / 任务 ------------------------- */
+/* 数据从客户端分包里一次性抽取到 mock/task-data.json（见 README） */
+const TASK_DATA = readJSON(path.join(ROOT, 'mock', 'task-data.json'), null);
+const QUEST_BY_ID = new Map(((TASK_DATA && TASK_DATA.quests) || []).map((q) => [q.id, q]));
+const TASK_BY_ID = new Map();
+if (TASK_DATA) {
+  for (const period of ['daily', 'weekly']) {
+    for (const slot of TASK_DATA.pools[period]) for (const t of slot) TASK_BY_ID.set(t.id, t);
+  }
+}
+
+/* 与原站一致的整数混淆，用来按「周期序号 + 槽位」稳定抽取任务 */
+function taskMix(x) {
+  let t = (x ^ 2654435769) >>> 0;
+  t = Math.imul(t ^ (t >>> 16), 2246822507) >>> 0;
+  t = Math.imul(t ^ (t >>> 13), 3266489909) >>> 0;
+  return (t ^ (t >>> 16)) >>> 0;
+}
+
+function periodIndex(period, now) {
+  const day = 86400000;
+  const base = TASK_DATA.epoch;
+  return period === 'daily'
+    ? Math.floor((now - base) / day) + 1
+    : Math.floor((now - base) / (7 * day)) + 1;
+}
+
+function pickTask(period, idx, slot, reroll) {
+  const pool = TASK_DATA.pools[period][slot];
+  const a = taskMix(idx * 977 + slot * 131 + (period === 'weekly' ? 50000 : 0)) % pool.length;
+  if (!reroll) return pool[a];
+  return pool[(a + 1 + (taskMix(idx * 31 + slot * 7 + reroll * 1009) % (pool.length - 1))) % pool.length];
+}
+
+function ensureTasks(p, now) {
+  if (!TASK_DATA) return;
+  for (const period of ['daily', 'weekly']) {
+    const idx = periodIndex(period, now);
+    const cur = p[period];
+    if (!cur || cur.idx !== idx || !Array.isArray(cur.ids) || cur.ids.length !== 3) {
+      p[period] = {
+        idx,
+        ids: [0, 1, 2].map((s) => pickTask(period, idx, s).id),
+        prog: [0, 0, 0],
+        claimed: [0, 0, 0, 0],
+        rerolls: 0,
+      };
+    }
+  }
+}
+
+function bonusDaily(idx) {
+  const pool = TASK_DATA.bonusPool;
+  return pool[taskMix(idx * 61 + 7) % pool.length];
+}
+
+function bonusWeekly(idx) {
+  const pool = TASK_DATA.bonusPool;
+  return ['master-ball', pool[taskMix(idx * 17 + 3) % pool.length], pool[taskMix(idx * 23 + 5) % pool.length]];
+}
+
+/* 槽位 0~2 是三个日常/周常，槽位 3 是「三个都领完」的额外奖励 */
+function taskReward(p, period, slot) {
+  const d = p[period];
+  if (slot < 3) return { dust: TASK_DATA.dust[period][slot], items: [] };
+  if (period === 'weekly') return { dust: 500, items: bonusWeekly(d.idx) };
+  const st = p.dailyStreak || { last: 0, n: 0 };
+  const n = st.last === d.idx - 1 ? st.n + 1 : st.last === d.idx ? st.n : 1;
+  return { dust: 50 * Math.min(5, n), items: [bonusDaily(d.idx)] };
+}
+
+function claimTask(p, period, slot, now) {
+  if (!TASK_DATA || !['daily', 'weekly'].includes(period)) return false;
+  if (!Number.isInteger(slot) || slot < 0 || slot > 3) return false;
+  ensureTasks(p, now);
+  const d = p[period];
+  if (d.claimed[slot]) return false;
+  if (slot === 3) {
+    if (!(d.claimed[0] === 1 && d.claimed[1] === 1 && d.claimed[2] === 1)) return false;
+  } else {
+    const task = TASK_BY_ID.get(d.ids[slot]);
+    if (!task || (d.prog[slot] || 0) < task.goal) return false;
+  }
+  const rw = taskReward(p, period, slot);
+  d.claimed[slot] = 1;
+  if (slot === 3 && period === 'daily') {
+    const st = p.dailyStreak || { last: 0, n: 0 };
+    p.dailyStreak = { last: d.idx, n: st.last === d.idx - 1 ? st.n + 1 : 1 };
+  }
+  if (slot < 3) {
+    p.counters = p.counters || {};
+    p.counters.tasks = (p.counters.tasks || 0) + 1;
+  }
+  p.bag = p.bag || {};
+  for (const it of rw.items) p.bag[it] = Math.min(9, (p.bag[it] || 0) + 1);
+  p.stardust = (p.stardust || 0) + rw.dust;
+  p.totalStardust = (p.totalStardust || 0) + rw.dust;
+  return true;
+}
+
+function rerollTask(p, period, slot, now) {
+  if (!TASK_DATA || !['daily', 'weekly'].includes(period)) return false;
+  if (!Number.isInteger(slot) || slot < 0 || slot > 2) return false;
+  ensureTasks(p, now);
+  const d = p[period];
+  const cur = TASK_BY_ID.get(d.ids[slot]);
+  if (d.rerolls >= 1 || d.claimed[slot]) return false;
+  if (cur && (d.prog[slot] || 0) >= cur.goal) return false;
+  let id = d.ids[slot];
+  for (let r = d.rerolls + 1; r < d.rerolls + 8 && d.ids.includes(id); r++) id = pickTask(period, d.idx, slot, r).id;
+  if (d.ids.includes(id)) return false;
+  d.ids[slot] = id;
+  d.prog[slot] = 0;
+  d.rerolls += 1;
+  return true;
+}
+
+/* 委托（成就式长期目标）：客户端只上报「已达成」，这里按表发奖 */
+function claimQuest(p, id) {
+  const q = QUEST_BY_ID.get(id);
+  if (!q) return false;
+  p.quests = p.quests || {};
+  if (p.quests[id]) return false;
+  p.quests[id] = 1;
+  p.stardust = (p.stardust || 0) + q.reward;
+  p.totalStardust = (p.totalStardust || 0) + q.reward;
+  if (q.title) {
+    p.cosmetics = p.cosmetics || [];
+    const key = 'title:q:' + id;
+    if (!p.cosmetics.includes(key)) p.cosmetics.push(key);
+  }
+  return true;
+}
+
+/* 任务进度：原版由服务端在对局结束时累加，这里按客户端上报的计数器差额复算 */
+const BEST_METRICS = new Set(['level', 'stage', 'runKills']);
+
+function metricDelta(metric, counters, result) {
+  if (counters) {
+    if (counters[metric] != null) return Number(counters[metric]) || 0;
+    if (counters['best_' + metric] != null) return Number(counters['best_' + metric]) || 0;
+  }
+  const r = result || {};
+  switch (metric) {
+    case 'runs': return 1;
+    case 'playtime': return Number(r.time) || 0;
+    case 'wins': return r.victory ? 1 : 0;
+    case 'kills': return Number(r.kills) || 0;
+    case 'level': return Number(r.level) || 0;
+    case 'stage': return Number(r.stage) || 0;
+    case 'runKills': return Number(r.kills) || 0;
+    default: return 0;
+  }
+}
+
+function updateTaskProgress(p, counters, result, now) {
+  if (!TASK_DATA) return;
+  ensureTasks(p, now);
+  for (const period of ['daily', 'weekly']) {
+    const d = p[period];
+    for (let slot = 0; slot < 3; slot++) {
+      const task = TASK_BY_ID.get(d.ids[slot]);
+      if (!task) continue;
+      const v = metricDelta(task.metric, counters, result);
+      if (!v) continue;
+      const cur = d.prog[slot] || 0;
+      d.prog[slot] = Math.min(task.goal, BEST_METRICS.has(task.metric) ? Math.max(cur, v) : cur + v);
+    }
+  }
 }
 
 /* ------------------------- 接口实现 ------------------------- */
@@ -279,7 +549,13 @@ function handle(req, res, urlPath, query, body) {
       // 客户端是「本地先算、再把结果交给服务端确认」的模式，
       // 因此这里必须复算出同样结果，否则返回的旧档案会把客户端的改动覆盖掉。
       for (const a of acts) {
-        if (a && a.k === 'shop') buyShop(p, a.id, now);
+        if (!a) continue;
+        if (a.k === 'shop') buyShop(p, a.id, now);
+        else if (a.k === 'lab') buyLab(p, a.id);
+        else if (a.k === 'item') buyItem(p, a.key);
+        else if (a.k === 'archive') archiveItem(p, a.key, a.off);
+        else if (a.k === 'quest') claimQuest(p, a.id);
+        else if (a.k === 'task') claimTask(p, a.period, a.slot, now);
       }
     } else {
       mergeProgress(p, { progress: body?.progress || {} });
@@ -322,6 +598,8 @@ function handle(req, res, urlPath, query, body) {
     p.totalStardust = (p.totalStardust || 0) + rw.stardust;
     p.bonk = (p.bonk || 0) + rw.bonk;
     p.totalBonk = (p.totalBonk || 0) + rw.bonk;
+    // 每日/每周任务的进度由服务端维护（原版逻辑），这里按本次上报的计数器差额累加
+    updateTaskProgress(p, result.progress && result.progress.counters, result, now);
     saveProfile(p);
 
     // 结算面板需要的战绩记录（字段与客户端 showSummary 对齐）
@@ -364,8 +642,19 @@ function handle(req, res, urlPath, query, body) {
     return json(200, { profile: getProfile(), ok: true, now });
   }
   if (/^\/treasures\/spin$/.test(urlPath)) return json(200, { profile: getProfile(), prize: null, now });
-  if (/^\/(quests|tasks)\/claim$/.test(urlPath)) return json(200, { profile: getProfile(), ok: true, now });
-  if (/^\/tasks\/reroll$/.test(urlPath)) return json(200, { profile: getProfile(), ok: true, now });
+  if (/^\/(quests|tasks)\/claim$/.test(urlPath) && method === 'POST') {
+    const p = getProfile();
+    if (urlPath.startsWith('/quests')) claimQuest(p, body?.id);
+    else claimTask(p, body?.period, body?.slot, now);
+    saveProfile(p);
+    return json(200, { profile: p, ok: true, now });
+  }
+  if (/^\/tasks\/reroll$/.test(urlPath) && method === 'POST') {
+    const p = getProfile();
+    rerollTask(p, body?.period, body?.slot, now);
+    saveProfile(p);
+    return json(200, { profile: p, ok: true, now });
+  }
 
   /* --- 排行榜 / 成绩：返回可渲染的空榜 --- */
   if (/^\/leaderboard/.test(urlPath)) {
