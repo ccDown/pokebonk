@@ -23,9 +23,51 @@ function readJSON(file, fallback) {
 
 function writeJSON(file, data) {
   ensureDir();
-  const tmp = file + '.tmp';
+  // 临时文件名必须唯一：多个进程同时写时，共用一个 .tmp 会出现
+  // 「A 写临时文件 → B 覆盖临时文件 → A 改名」把 B 的内容写进去，导致丢档。
+  const tmp = file + '.' + process.pid + '.' + (writeJSON._n = (writeJSON._n || 0) + 1) + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(data));
   fs.renameSync(tmp, file);
+}
+
+/* ------------------------- 跨进程写锁 ------------------------- */
+/**
+ * 有时会有两个服务实例（比如自己的 启动游戏.bat + 另一个窗口）同时开着，
+ * 它们共享同一个 _save。两个请求各自「读档 → 改 → 写回」就会出现后写覆盖先写，
+ * 表现就是「刚买的东西过一会儿又回去了」。这里用文件锁把写操作串起来。
+ */
+const LOCK_FILE = path.join(SAVE_DIR, '.write.lock');
+const sleepSync = (ms) => {
+  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
+  catch (e) { const t = Date.now(); while (Date.now() - t < ms) { /* 兜底忙等 */ } }
+};
+
+function withWriteLock(fn) {
+  ensureDir();
+  let fd = null;
+  for (let i = 0; i < 6000; i++) {
+    try {
+      fd = fs.openSync(LOCK_FILE, 'wx');
+      break;
+    } catch (e) {
+      if (e.code !== 'EEXIST') break; // 锁文件出问题就直接放行，别把游戏卡死
+      // 超过 5 秒的锁视为残留（进程被强杀），清掉重来
+      try {
+        const st = fs.statSync(LOCK_FILE);
+        if (Date.now() - st.mtimeMs > 5000) fs.unlinkSync(LOCK_FILE);
+      } catch (e2) { /* 已被别人删掉 */ }
+      sleepSync(i < 20 ? 1 : 5);
+    }
+  }
+  if (fd === null) console.error('[lock] timeout, proceeding without lock');
+  try {
+    return fn();
+  } finally {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch (e) { /* ignore */ }
+      try { fs.unlinkSync(LOCK_FILE); } catch (e) { /* ignore */ }
+    }
+  }
 }
 
 /* ------------------------- 档案 ------------------------- */
@@ -98,6 +140,24 @@ function saveProfile(p) {
 }
 
 /* ------------------------- 工具 ------------------------- */
+const ACTION_LOG = path.join(SAVE_DIR, 'actions.log');
+
+/* 记录每一次会改档案的操作，方便排查「买完又回去了」这类问题 */
+function logAction(a, ok, p) {
+  try {
+    ensureDir();
+    let line = new Date().toISOString() + ' ' + (ok ? 'OK  ' : 'SKIP') + ' ' +
+      JSON.stringify(a) + ' | lab=' + JSON.stringify(p.lab || {}) +
+      ' dust=' + p.stardust + ' bag=' + Object.keys(p.bag || {}).length +
+      ' items=' + (p.itemsOwned || []).length + '\n';
+    try {
+      const st = fs.statSync(ACTION_LOG);
+      if (st.size > 256 * 1024) fs.writeFileSync(ACTION_LOG, '');
+    } catch (e) { /* 文件不存在，忽略 */ }
+    fs.appendFileSync(ACTION_LOG, line);
+  } catch (e) { /* 日志失败不影响主流程 */ }
+}
+
 function uniq(list) { return [...new Set(list)]; }
 
 function mergeProgress(profile, result) {
@@ -199,16 +259,22 @@ const LAB = {
   bag: { max: 1, cost: labConst(4000) },
 };
 
-function buyLab(p, id) {
+function buyLab(p, id, wantLv) {
   const item = LAB[id];
   if (!item) return false;
   p.lab = p.lab || {};
-  const lv = p.lab[id] || 0;
-  if (lv >= item.max) return false;
-  const price = item.cost(lv);
-  if ((p.stardust || 0) < price) return false;
-  p.stardust -= price;
-  p.lab[id] = lv + 1;
+  const cur = p.lab[id] || 0;
+  // 客户端会带上它认为的最新等级。以它为准（只增不减），
+  // 万一服务端落后一步也不会把刚买的等级吞回去。
+  let target = Number(wantLv);
+  if (!Number.isFinite(target) || target <= cur) target = cur + 1;
+  target = Math.min(target, item.max);
+  if (target <= cur) return false;
+  let total = 0;
+  for (let l = cur; l < target; l++) total += item.cost(l);
+  if ((p.stardust || 0) < total) return false;
+  p.stardust -= total;
+  p.lab[id] = target;
   return true;
 }
 
@@ -230,10 +296,15 @@ const ITEM_PRICE = {
 };
 
 function buyItem(p, key) {
-  const price = ITEM_PRICE[key];
-  if (price == null) return false;
   p.itemsOwned = p.itemsOwned || [];
   if (p.itemsOwned.includes(key)) return false;
+  const price = ITEM_PRICE[key];
+  // 价目表里没有的 key（正常不会出现）：不拦着，直接放行，
+  // 宁可白送也不能让客户端「买了又被退回去」。
+  if (price == null) {
+    p.itemsOwned.push(key);
+    return true;
+  }
   if ((p.stardust || 0) < price) return false;
   p.stardust -= price;
   p.itemsOwned.push(key);
@@ -434,6 +505,26 @@ function updateTaskProgress(p, counters, result, now) {
   }
 }
 
+/* ------------------------- 地区推进 ------------------------- */
+/* 地区顺序取自客户端数据表；打通一张图，下一张才会开 */
+const BIOME_ORDER = ['forest', 'desert', 'coast', 'glacier', 'graveyard', 'volcano'];
+
+/* biomes[id] 的含义：-1 未解锁 / 0 已解锁未通关 / 1 普通通关 / 2 困难 / 3 噩梦 */
+function completeBiome(p, biome, tier) {
+  if (!BIOME_ORDER.includes(biome)) return false;
+  p.biomes = p.biomes || {};
+  const cur = p.biomes[biome] ?? 0;
+  const reached = Math.max(cur, (Number(tier) || 0) + 1);
+  const changed = reached !== cur;
+  p.biomes[biome] = reached;
+  // 链式解锁：前一张图通关后，后一张图自动开启（等级 0）
+  for (let i = 1; i < BIOME_ORDER.length; i++) {
+    const id = BIOME_ORDER[i];
+    if (!(id in p.biomes) && (p.biomes[BIOME_ORDER[i - 1]] ?? -1) >= 1) p.biomes[id] = 0;
+  }
+  return changed;
+}
+
 /* ------------------------- 接口实现 ------------------------- */
 const STATUS = readJSON(STATUS_FILE, null) || {
   maintenance: { on: false, title: '', message: '', eta: 0 },
@@ -445,7 +536,15 @@ const STATUS = readJSON(STATUS_FILE, null) || {
 
 const NEWS = readJSON(NEWS_FILE, null) || [];
 
+/* 读请求直接放行；写请求（POST/PUT/DELETE）加跨进程锁，避免读改写互相覆盖 */
 function handle(req, res, urlPath, query, body) {
+  const method = req.method.toUpperCase();
+  if (method === 'GET' || method === 'HEAD') return route(req, res, urlPath, query, body);
+  if (process.env.PB_NOLOCK === '1') return route(req, res, urlPath, query, body); // 仅用于对比测试
+  return withWriteLock(() => route(req, res, urlPath, query, body));
+}
+
+function route(req, res, urlPath, query, body) {
   const now = Date.now();
   const method = req.method.toUpperCase();
   const seg = urlPath.replace(/^\/+|\/+$/g, '').split('/');
@@ -550,12 +649,14 @@ function handle(req, res, urlPath, query, body) {
       // 因此这里必须复算出同样结果，否则返回的旧档案会把客户端的改动覆盖掉。
       for (const a of acts) {
         if (!a) continue;
-        if (a.k === 'shop') buyShop(p, a.id, now);
-        else if (a.k === 'lab') buyLab(p, a.id);
-        else if (a.k === 'item') buyItem(p, a.key);
-        else if (a.k === 'archive') archiveItem(p, a.key, a.off);
-        else if (a.k === 'quest') claimQuest(p, a.id);
-        else if (a.k === 'task') claimTask(p, a.period, a.slot, now);
+        let ok = false;
+        if (a.k === 'shop') ok = buyShop(p, a.id, now);
+        else if (a.k === 'lab') ok = buyLab(p, a.id, a.lv);
+        else if (a.k === 'item') ok = buyItem(p, a.key);
+        else if (a.k === 'archive') ok = archiveItem(p, a.key, a.off);
+        else if (a.k === 'quest') ok = claimQuest(p, a.id);
+        else if (a.k === 'task') ok = claimTask(p, a.period, a.slot, now);
+        logAction(a, ok, p);
       }
     } else {
       mergeProgress(p, { progress: body?.progress || {} });
@@ -600,6 +701,10 @@ function handle(req, res, urlPath, query, body) {
     p.totalBonk = (p.totalBonk || 0) + rw.bonk;
     // 每日/每周任务的进度由服务端维护（原版逻辑），这里按本次上报的计数器差额累加
     updateTaskProgress(p, result.progress && result.progress.counters, result, now);
+    // 通关推进地区进度：普通 +1、困难 +2、噩梦 +3，同时解锁下一张图
+    if (result.victory && result.biome && result.mode !== 'endless' && result.mode !== 'tower') {
+      completeBiome(p, result.biome, result.tier);
+    }
     saveProfile(p);
 
     // 结算面板需要的战绩记录（字段与客户端 showSummary 对齐）
@@ -637,9 +742,40 @@ function handle(req, res, urlPath, query, body) {
     });
   }
 
-  /* --- 商店 / 养成（客户端主导，服务端确认） --- */
+  /* --- 商店 / 养成 --- */
+  /* 客户端购买走的是这三个直连接口（不是 /profile/actions），
+     必须真的扣费并升级，否则返回的旧档案会把本地改动覆盖回去。 */
   if (/^\/(shop|items|lab)\/buy$/.test(urlPath) && method === 'POST') {
-    return json(200, { profile: getProfile(), ok: true, now });
+    const p = getProfile();
+    let ok = false;
+    if (urlPath === '/lab/buy') {
+      const id = String(body?.id ?? '');
+      ok = buyLab(p, id, body?.lv);
+      logAction({ k: 'lab', id, lv: body?.lv }, ok, p);
+    } else if (urlPath === '/items/buy') {
+      const key = String(body?.key ?? '');
+      ok = buyItem(p, key);
+      logAction({ k: 'item', key }, ok, p);
+    } else {
+      const id = String(body?.id ?? '');
+      const n = Math.max(1, Math.min(9, Number(body?.n) || 1));
+      for (let i = 0; i < n; i++) {
+        if (!buyShop(p, id, now)) break;
+        ok = true;
+      }
+      logAction({ k: 'shop', id, n }, ok, p);
+    }
+    if (ok) saveProfile(p);
+    return json(200, { profile: p, ok, now });
+  }
+  if (/^\/items\/archive$/.test(urlPath) && method === 'POST') {
+    const p = getProfile();
+    const key = String(body?.key ?? '');
+    const off = !!body?.off;
+    const ok = archiveItem(p, key, off);
+    logAction({ k: 'archive', key, off }, ok, p);
+    if (ok) saveProfile(p);
+    return json(200, { profile: p, ok, now });
   }
   if (/^\/treasures\/spin$/.test(urlPath)) return json(200, { profile: getProfile(), prize: null, now });
   if (/^\/(quests|tasks)\/claim$/.test(urlPath) && method === 'POST') {
